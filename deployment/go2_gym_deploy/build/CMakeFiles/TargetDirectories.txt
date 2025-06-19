@@ -1,0 +1,4 @@
+/home/yd/program/rsl_rl_teacher_student/deployment/go2_gym_deploy/build/CMakeFiles/lcm_position_go2.dir
+/home/yd/program/rsl_rl_teacher_student/deployment/go2_gym_deploy/build/CMakeFiles/lcm_receive.dir
+/home/yd/program/rsl_rl_teacher_student/deployment/go2_gym_deploy/build/CMakeFiles/edit_cache.dir
+/home/yd/program/rsl_rl_teacher_student/deployment/go2_gym_deploy/build/CMakeFiles/rebuild_cache.dir

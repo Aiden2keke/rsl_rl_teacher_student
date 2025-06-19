@@ -33,12 +33,15 @@ from .base_config import BaseConfig
 class LeggedRobotCfg(BaseConfig):
     class env:
         num_envs = 4096
-        num_observations = 235
-        num_privileged_obs = None # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
+        num_observations = 45
+        num_privileged_obs = 45 + 3 + 187 + 63 + 12 + 12 + 12 # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
+        num_privileged_latent = 32
         num_actions = 12
         env_spacing = 3.  # not used with heightfields/trimeshes 
         send_timeouts = True # send time out information to the algorithm
         episode_length_s = 20 # episode length in seconds
+        num_actors = 2 
+        obs_history_length = 15
 
     class terrain:
         mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
@@ -126,6 +129,9 @@ class LeggedRobotCfg(BaseConfig):
         push_robots = True
         push_interval_s = 15
         max_push_vel_xy = 1.
+
+        randomize_motor = True
+        motor_strength_range = [0.8, 1.2]
 
     class rewards:
         class scales:
@@ -231,7 +237,7 @@ class LeggedRobotCfgPPO(BaseConfig):
         policy_class_name = 'ActorCritic'
         algorithm_class_name = 'PPO'
         num_steps_per_env = 24 # per iteration
-        max_iterations = 1500 # number of policy updates
+        max_iterations = 7500 # number of policy updates
 
         # logging
         save_interval = 50 # check for potential saves every this many iterations
@@ -242,3 +248,4 @@ class LeggedRobotCfgPPO(BaseConfig):
         load_run = -1 # -1 = last run
         checkpoint = -1 # -1 = last saved model
         resume_path = None # updated from load_run and chkpt
+        student_reinforcing = False

@@ -31,6 +31,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
@@ -45,13 +46,15 @@ class PPO:
                  gamma=0.998,
                  lam=0.95,
                  value_loss_coef=1.0,
-                 entropy_coef=0.0,
+                 entropy_coef=0.01,
                  learning_rate=1e-3,
                  max_grad_norm=1.0,
                  use_clipped_value_loss=True,
                  schedule="fixed",
                  desired_kl=0.01,
                  device='cpu',
+                 num_proprio_encoder_substeps = 1,
+                 student_reinforcing = False
                  ):
 
         self.device = device
@@ -60,11 +63,21 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
 
+        self.num_proprio_encoder_substeps = num_proprio_encoder_substeps
+        self.student_reinforcing = student_reinforcing
         # PPO components
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
         self.storage = None # initialized later
-        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+        if not self.student_reinforcing:
+            self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+            self.extra_optimizer = optim.Adam(
+                [
+                    {"params": self.actor_critic.proprioceptive_encoder.parameters()},
+                ],
+                lr=0.001)
+        else:
+            self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -78,8 +91,8 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
-        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
+    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, obs_history_shape, critic_obs_shape, action_shape):
+        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, obs_history_shape, critic_obs_shape, action_shape, self.device)
 
     def test_mode(self):
         self.actor_critic.test()
@@ -87,18 +100,19 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs):
+    def act(self, obs, obs_hisotry, critic_obs):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
+        self.transition.actions = self.actor_critic.act(obs, obs_hisotry, critic_obs).detach()
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
-        self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        self.transition.observations = obs.clone()
+        self.transition.observations_history = obs_hisotry.clone()
+        self.transition.critic_observations = critic_obs.clone()
         return self.transition.actions
     
     def process_env_step(self, rewards, dones, infos):
@@ -120,15 +134,19 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_proprio_extra_loss = 0
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        for obs_batch, obs_history_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
 
-
-                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                if not self.student_reinforcing:
+                    self.actor_critic.act(obs_batch, obs_history_batch, critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                else:
+                    self.actor_critic.act_student_reinforcing(obs_batch, obs_history_batch, critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
                 value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
                 mu_batch = self.actor_critic.action_mean
@@ -178,10 +196,27 @@ class PPO:
 
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()
+            # extra gradient step for the proprioperceptive encoder training
+                if not self.student_reinforcing:
+                    for epoch in range(self.num_proprio_encoder_substeps):
+                        proprio_latent_batch = self.actor_critic.proprio_encode(obs_history_batch)
+                        privileged_latent_batch = self.actor_critic.privileged_encode(critic_obs_batch).detach()
+                        proprio_extra_loss = F.mse_loss(F.normalize(privileged_latent_batch, p=2, dim=-1), F.normalize(proprio_latent_batch, p=2, dim=-1))
+
+                        self.extra_optimizer.zero_grad()
+                        proprio_extra_loss.backward()
+                        nn.utils.clip_grad_norm_(
+                            self.actor_critic.parameters(), self.max_grad_norm)       
+                        self.extra_optimizer.step()
+                    
+                        mean_proprio_extra_loss += proprio_extra_loss.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        num_updates_extra = self.num_learning_epochs * self.num_mini_batches * self.num_proprio_encoder_substeps
+        if num_updates_extra > 0:
+            mean_proprio_extra_loss /= num_updates_extra 
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, mean_proprio_extra_loss

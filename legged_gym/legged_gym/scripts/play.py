@@ -53,6 +53,8 @@ def play(args):
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
+    obs_history = env.get_observations_history()
+    privileged_obs = env.get_privileged_observations()
     # load policy
     train_cfg.runner.resume = True
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
@@ -75,8 +77,8 @@ def play(args):
     img_idx = 0
 
     for i in range(10*int(env.max_episode_length)):
-        actions = policy(obs.detach())
-        obs, _, rews, dones, infos = env.step(actions.detach())
+        actions = policy(obs.detach(), obs_history.detach(), privileged_obs.detach())
+        obs, privileged_obs , rews, dones, infos, obs_history = env.step(actions.detach())
         if RECORD_FRAMES:
             if i % 2:
                 filename = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'frames', f"{img_idx}.png")

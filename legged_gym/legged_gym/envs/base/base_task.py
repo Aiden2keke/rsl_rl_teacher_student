@@ -61,12 +61,15 @@ class BaseTask():
         self.num_obs = cfg.env.num_observations
         self.num_privileged_obs = cfg.env.num_privileged_obs
         self.num_actions = cfg.env.num_actions
+        self.num_actors =cfg.env.num_actors # actors only this change
+        self.obs_history_length = cfg.env.obs_history_length
 
         # optimization flags for pytorch JIT
         torch._C._jit_set_profiling_mode(False)
         torch._C._jit_set_profiling_executor(False)
 
         # allocate buffers
+        # self.estimated_obs_buf = torch.zeros(self.num_envs, 49, device=self.device, dtype=torch.float)
         self.obs_buf = torch.zeros(self.num_envs, self.num_obs, device=self.device, dtype=torch.float)
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.reset_buf = torch.ones(self.num_envs, device=self.device, dtype=torch.long)
@@ -102,6 +105,7 @@ class BaseTask():
         return self.obs_buf
     
     def get_privileged_observations(self):
+        # print("privileged_obs_buf shape:", self.privileged_obs_buf.shape if self.privileged_obs_buf is not None else "None")
         return self.privileged_obs_buf
 
     def reset_idx(self, env_ids):
